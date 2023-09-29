@@ -26,7 +26,7 @@ func main() {
 
 	router.GET("/api", func(c *gin.Context) {
 		c.JSON(200, gin.H{
-			"success": "Welcome to shive api!"})
+			"success": "Welcome to review api!"})
 	})
 
 	router.Run(":" + port)
