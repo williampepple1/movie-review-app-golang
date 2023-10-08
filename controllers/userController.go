@@ -2,11 +2,13 @@ package controllers
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"net/http"
 	"review-app/database"
 	helper "review-app/helpers"
 	"review-app/models"
+	"strconv"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -28,6 +30,19 @@ func MaskPassword(password string) string {
 	return string(bytes)
 }
 
+func ConfirmPassword(userPassword string, passwordEntered string) (bool, string) {
+	err := bcrypt.CompareHashAndPassword([]byte(passwordEntered), []byte(userPassword))
+	check := true
+	msg := ""
+
+	if err != nil {
+		msg = fmt.Sprintf("Looks like you entered a wrong")
+		check = false
+	}
+	return check, msg
+}
+
+// User sign up
 func Signup() gin.HandlerFunc {
 
 	return func(c *gin.Context) {
@@ -139,4 +154,108 @@ func Signup() gin.HandlerFunc {
 			"Data":    map[string]interface{}{"data": result}})
 	}
 
+}
+
+// User Login
+func Login() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+		var user models.User
+		var retrievedUser models.User
+		defer cancel()
+		if err := c.BindJSON(&user); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+
+		err := userCollection.FindOne(ctx, bson.M{"email": user.Email}).Decode(&retrievedUser)
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "your email or password is incorrect"})
+			return
+		}
+
+		passwordIsValid, msg := ConfirmPassword(*user.Password, *retrievedUser.Password)
+		defer cancel()
+		if passwordIsValid != true {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": msg})
+			return
+		}
+
+		if retrievedUser.Email == nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "oops account not found"})
+		}
+		token, refreshToken, _ := helper.GenerateAllTokens(*retrievedUser.Email, *retrievedUser.Name, *retrievedUser.Username, *retrievedUser.User_type, retrievedUser.User_id)
+		helper.UpdateTokens(token, refreshToken, retrievedUser.User_id)
+		err = userCollection.FindOne(ctx, bson.M{"user_id": retrievedUser.User_id}).Decode(&retrievedUser)
+
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, retrievedUser)
+	}
+}
+
+// Get the details of a single user
+func GetUser() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		userId := c.Param("user_id")
+
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+
+		var user models.User
+		err := userCollection.FindOne(ctx, bson.M{"user_id": userId}).Decode(&user)
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+			return
+		}
+		c.JSON(http.StatusOK, user)
+	}
+}
+
+// To get all users
+func GetUsers() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if err := helper.VerifyUserType(c, "ADMIN"); err != nil {
+			c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
+			return
+		}
+		var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+
+		recordPerPage, err := strconv.Atoi(c.Query("recordPerPage"))
+		if err != nil || recordPerPage < 1 {
+			recordPerPage = 10
+		}
+		page, err1 := strconv.Atoi(c.Query("page"))
+		if err1 != nil || page < 1 {
+			page = 1
+		}
+
+		startIndex := (page - 1) * recordPerPage
+		startIndex, err = strconv.Atoi(c.Query("startIndex"))
+
+		match := bson.D{{Key: "$match", Value: bson.D{{}}}}
+		group := bson.D{{Key: "$group", Value: bson.D{
+			{Key: "_id", Value: bson.D{{Key: "_id", Value: "null"}}},
+			{Key: "Total number", Value: bson.D{{Key: "$sum", Value: 1}}},
+			{Key: "data", Value: bson.D{{Key: "$push", Value: "$$ROOT"}}}}}}
+		projectStage := bson.D{
+			{Key: "$project", Value: bson.D{
+				{Key: "_id", Value: 0},
+				{Key: "Total number", Value: 1},
+				{Key: "All users", Value: bson.D{{Key: "$slice", Value: []interface{}{"$data", startIndex, recordPerPage}}}}}}}
+		result, err := userCollection.Aggregate(ctx, mongo.Pipeline{
+			match, group, projectStage})
+		defer cancel()
+		if err != nil {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Ooops something went wrong. Can't fetch all users"})
+		}
+		var totalusers []bson.M
+		if err = result.All(ctx, &totalusers); err != nil {
+			log.Fatal(err)
+		}
+		c.JSON(http.StatusOK, totalusers[0])
+	}
 }

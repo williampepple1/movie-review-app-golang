@@ -39,6 +39,6 @@ func StartDB() *mongo.Client {
 var Client *mongo.Client = StartDB()
 
 func OpenCollection(client *mongo.Client, collectionName string) *mongo.Collection {
-	var collection *mongo.Collection = client.Database("shive-api").Collection(collectionName)
+	var collection *mongo.Collection = client.Database("review-app").Collection(collectionName)
 	return collection
 }

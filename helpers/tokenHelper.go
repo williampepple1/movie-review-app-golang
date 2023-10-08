@@ -1,18 +1,18 @@
 package helper
 
 import (
-	// "context"
-	// "fmt"
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"review-app/database"
 	"time"
 
 	jwt "github.com/dgrijalva/jwt-go"
-	// "go.mongodb.org/mongo-driver/bson"
-	// "go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/bson"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	// "go.mongodb.org/mongo-driver/mongo/options"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type JwtSignedDetails struct {
@@ -63,4 +63,68 @@ func GenerateAllTokens(
 	}
 
 	return token, refreshToken, err
+}
+
+func ValidateToken(signedToken string) (claims *JwtSignedDetails, msg string) {
+	token, err := jwt.ParseWithClaims(
+		signedToken,
+		&JwtSignedDetails{},
+		func(token *jwt.Token) (interface{}, error) {
+			return []byte(SECRET_KEY), nil
+		},
+	)
+
+	if err != nil {
+		msg = err.Error()
+		return
+	}
+
+	claims, ok := token.Claims.(*JwtSignedDetails)
+	if !ok {
+		msg = fmt.Sprintf("This token is incorrect. Sorry!")
+		msg = err.Error()
+		return
+	}
+
+	if claims.ExpiresAt < time.Now().Local().Unix() {
+		msg = fmt.Sprintf("Ooops looks like your token has expired")
+		msg = err.Error()
+		return
+	}
+	return claims, msg
+}
+
+func UpdateTokens(signedToken string, signedRefreshToken string, userId string) {
+	var ctx, cancel = context.WithTimeout(context.Background(), 100*time.Second)
+
+	var updateTok primitive.D
+
+	updateTok = append(updateTok, bson.E{Key: "token", Value: signedToken})
+	updateTok = append(updateTok, bson.E{Key: "refresh_token", Value: signedRefreshToken})
+
+	Updated_at, _ := time.Parse(time.RFC3339, time.Now().Format(time.RFC3339))
+	updateTok = append(updateTok, bson.E{Key: "updated_at", Value: Updated_at})
+
+	upsert := true
+	filter := bson.M{"user_id": userId}
+	opt := options.UpdateOptions{
+		Upsert: &upsert,
+	}
+
+	_, err := userCollection.UpdateOne(
+		ctx,
+		filter,
+		bson.D{
+			{Key: "$set", Value: updateTok},
+		},
+		&opt,
+	)
+
+	defer cancel()
+
+	if err != nil {
+		log.Panic(err)
+		return
+	}
+	return
 }
